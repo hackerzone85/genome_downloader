@@ -1,0 +1,26 @@
+[package]
+name        = "genome_downloader"
+version     = "0.1.0"
+edition     = "2024"
+description = "General-purpose bacterial genome downloader from NCBI (RefSeq/GenBank)"
+
+[[bin]]
+name = "genome_downloader"
+path = "src/main.rs"
+
+[dependencies]
+anyhow       = "1"
+clap         = { version = "4", features = ["derive"] }
+csv          = "1"
+flate2       = "1"
+futures-util = "0.3"
+indicatif    = "0.17"
+reqwest      = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+tokio        = { version = "1", features = ["full"] }
+# tokio::fs (used by download_file_resume) is included via features = ["full"]
+# serde removed — AssemblyRecord is now HashMap<String,String>, no derive needed
+
+[profile.release]
+opt-level = 3
+lto       = true
+strip     = true
