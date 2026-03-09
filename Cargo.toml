@@ -1,7 +1,7 @@
 [package]
 name        = "genome_downloader"
 version     = "0.1.0"
-edition     = "2021"
+edition     = "2024"
 description = "General-purpose bacterial genome downloader from NCBI (RefSeq/GenBank)"
 authors     = ["Mahendra Gaur <hackerzone85>"]
 license     = "MIT"
