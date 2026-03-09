@@ -1,0 +1,11 @@
+version: 1
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      dependencies:
+        patterns:
+          - "*" # Optional: Groups all updates into one PR to reduce noise
+
