@@ -1,0 +1,22 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# Downloaded genome data — never commit large data directories
+*_genomes/
+*_genomes_*/
+genome_data/
+
+# Sentinel and output files
+*.done
+failed_downloads.txt
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor artifacts
+.vscode/
+.idea/
+*.swp
+*.swo

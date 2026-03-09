@@ -15,11 +15,6 @@ const REFSEQ_URL: &str =
 const GENBANK_URL: &str =
     "https://ftp.ncbi.nlm.nih.gov/genomes/ASSEMBLY_REPORTS/assembly_summary_genbank.txt";
 
-// ── FIX 1 (E0774 + E0252): removed the misplaced `#[derive(Parser)]` attribute
-// and the duplicate `use clap::{Parser}` that appeared between the constants
-// and the struct definition. `use clap::Parser` is already imported above, and
-// `#[derive(Parser, Debug)]` is correctly placed on `struct Args` below. ──────
-
 #[derive(Parser, Debug)]
 #[command(
     name = "genome_downloader",
@@ -234,14 +229,8 @@ async fn main() -> Result<()> {
     // A single taxid across all records confirms no cross-species contamination.
     let mut taxid_counts: HashMap<String, usize> = HashMap::new();
     for rec in all_records.values() {
-        let tid = rec
-            .get("species_taxid")
-            .map(|s| s.as_str())
-            .unwrap_or("")
-            .to_string();
-        if !tid.is_empty() {
-            *taxid_counts.entry(tid).or_insert(0) += 1;
-        }
+        let tid = rec.get("species_taxid").map(|s| s.as_str()).unwrap_or("").to_string();
+        if !tid.is_empty() { *taxid_counts.entry(tid).or_insert(0) += 1; }
     }
     let n_taxid_clean = taxid_counts.len() <= 1;
 
@@ -268,11 +257,7 @@ async fn main() -> Result<()> {
         } else {
             taxid_counts.keys().cloned().collect::<Vec<_>>().join(", ")
         },
-        if n_taxid_clean {
-            "✔"
-        } else {
-            "⚠  multiple taxids — possible contamination!"
-        }
+        if n_taxid_clean { "✔" } else { "⚠  multiple taxids — possible contamination!" }
     );
     println!(
         "  Version = latest      : {:>9} / {:>9}  {}",
@@ -569,7 +554,7 @@ async fn process_summary(
         // species_taxid — stored in record for post-filter contamination check.
         // Not used as a hard filter: the value varies per organism and is
         // unknown at parse time. Uniqueness is validated in the summary block.
-        let _species_taxid = get(&col, &row, "species_taxid");
+        let species_taxid = get(&col, &row, "species_taxid");
 
         if organism_name.starts_with(&args.organism)
             && passes_only
