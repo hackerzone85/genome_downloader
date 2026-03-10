@@ -193,22 +193,15 @@ async fn main() -> Result<()> {
 
     // ── Dataset summary — printed before download starts ────────────────────
     let total = all_records.len();
-    let n_complete = all_records
-        .values()
-        .filter(|r| {
-            r.get("assembly_level")
-                .map(|s| s == "Complete Genome")
-                .unwrap_or(false)
-        })
-        .count();
-    let n_chromosome = all_records
-        .values()
-        .filter(|r| {
-            r.get("assembly_level")
-                .map(|s| s == "Chromosome")
-                .unwrap_or(false)
-        })
-        .count();
+    
+    // Count occurrences of each assembly level
+    let mut assembly_level_counts: HashMap<String, usize> = HashMap::new();
+    for rec in all_records.values() {
+        if let Some(level) = rec.get("assembly_level") {
+            *assembly_level_counts.entry(level.clone()).or_insert(0) += 1;
+        }
+    }
+    
     let n_bacteria = all_records
         .values()
         .filter(|r| r.get("group").map(|s| s == "bacteria").unwrap_or(false))
@@ -238,8 +231,12 @@ async fn main() -> Result<()> {
     println!("  Dataset Summary");
     println!("{}", sep);
     println!("  Total genomes         : {:>9}", fmt_num(total));
-    println!("  Complete Genome       : {:>9}", fmt_num(n_complete));
-    println!("  Chromosome            : {:>9}", fmt_num(n_chromosome));
+    
+    // Display counts for all requested assembly levels
+    for level in &args.assembly_level {
+        let count = assembly_level_counts.get(level).copied().unwrap_or(0);
+        println!("  {:<21}: {:>9}", level, fmt_num(count));
+    }
     println!(
         "  Group = bacteria      : {:>9} / {:>9}  {}",
         fmt_num(n_bacteria),
