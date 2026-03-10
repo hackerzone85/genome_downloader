@@ -1,0 +1,229 @@
+# =============================================================================
+# Snakemake Workflow — Bacterial Genome Downloader
+# Powered by genome_downloader (https://github.com/hackerzone85/genome_downloader)
+# =============================================================================
+#
+# USAGE:
+#   # Dry run (preview what will execute)
+#   snakemake --dry-run --configfile config/config.yaml
+#
+#   # Run with 8 cores
+#   snakemake --cores 8 --configfile config/config.yaml
+#
+#   # Run a specific rule only
+#   snakemake download_genomes --cores 8 --configfile config/config.yaml
+#
+#   # Generate DAG diagram
+#   snakemake --configfile config/config.yaml --dag | dot -Tsvg > dag.svg
+#
+# REQUIREMENTS:
+#   - genome_downloader binary (download from GitHub Releases)
+#   - Snakemake >= 7.0
+#
+# OUTPUT:
+#   data/genomes/               → downloaded .fna genome files
+#   data/filtered_assemblies.txt → filtered NCBI assembly metadata (TSV)
+#   data/ftp_urls.txt           → FTP URLs of all downloaded genomes
+#   ~/.ncbi_assembly_summaries/ → cached NCBI summary files (shared, reused)
+# =============================================================================
+
+from pathlib import Path
+import glob
+import sys
+
+configfile: "config/config.yaml"
+
+# ── Derive genome list after download ────────────────────────────────────────
+GENOME_DIR = config["paths"]["genomes_dir"]
+EXT        = config["genome_ext"]
+
+# Genomes will not exist before the first run — suppress the warning gracefully
+SAMPLES = [Path(f).stem for f in glob.glob(f"{GENOME_DIR}/*.{EXT}")]
+if not SAMPLES:
+    print(
+        f"INFO: No .{EXT} files found in {GENOME_DIR} yet. "
+        f"Run 'snakemake download_genomes --cores 8 --configfile config/config.yaml' first.",
+        file=sys.stderr
+    )
+
+RESULTS = config["paths"]["results_dir"]
+
+# ── Wildcard constraints ──────────────────────────────────────────────────────
+wildcard_constraints:
+    sample = r"[A-Za-z0-9_.\-]+"
+
+
+# =============================================================================
+# TARGET RULE — default target produces all final outputs
+# =============================================================================
+rule all:
+    input:
+        # Genome download
+        "data/genomes/.download_complete",
+        # Filtered assembly metadata
+        config["paths"]["assembly_summary"],
+        # Per-genome FASTA stats summary
+        f"{RESULTS}/genome_stats.tsv",
+
+
+# =============================================================================
+# STAGE 1 — Download genomes via genome_downloader
+# =============================================================================
+rule download_genomes:
+    """
+    Downloads bacterial genomes from NCBI RefSeq + GenBank using genome_downloader.
+
+    genome_downloader handles:
+      - NCBI assembly summary caching (~1.65 GB, downloaded once, reused for 7 days)
+      - Organism filtering (name, assembly level, subspecies, genome size)
+      - BioSample deduplication (RefSeq preferred over GenBank)
+      - Contamination validation (group=bacteria, unique species_taxid)
+      - Parallel download with HTTP Range resume (safe to interrupt and restart)
+      - Gzip decompression + sentinel .done files per genome
+
+    Outputs:
+      data/filtered_assemblies.txt  — filtered NCBI metadata TSV
+      data/ftp_urls.txt             — FTP URL list
+      data/genomes/*.fna            — decompressed genome FASTA files
+      data/genomes/.download_complete — sentinel confirming all downloads done
+    """
+    output:
+        filtered  = config["paths"]["assembly_summary"],
+        ftp_list  = "data/ftp_urls.txt",
+        sentinel  = touch("data/genomes/.download_complete")
+    params:
+        binary        = config["tools"]["genome_downloader"],
+        organism      = config["download"]["organism"],
+        assembly_lvl  = config["download"]["assembly_level"],
+        outdir        = config["paths"]["genomes_dir"],
+        threads       = config["download"]["threads"],
+        exclude_subsp = config["download"].get("exclude_subsp", ""),
+        only_subsp    = config["download"].get("only_subsp", ""),
+        min_size      = config["download"]["min_genome_size"],
+        summary_dir   = config["download"]["summary_files_dir"],
+        cache_days    = config["download"].get("cache_days", 7),
+        refresh       = "--refresh-cache" if config["download"].get("refresh_cache", False) else ""
+    threads:
+        config["download"]["threads"]
+    resources:
+        mem_mb  = 4000,
+        runtime = 600    # 10 hours — conservative limit for large species
+    log:
+        f"{RESULTS}/.logs/download_genomes.log"
+    benchmark:
+        f"{RESULTS}/.benchmarks/download_genomes.txt"
+    shell:
+        """
+        mkdir -p $(dirname {log})
+        mkdir -p {params.outdir}
+        mkdir -p {params.summary_dir}
+
+        # Build optional flags conditionally
+        EXCLUDE=""
+        if [ -n "{params.exclude_subsp}" ]; then
+            EXCLUDE="--exclude-subsp \\"{params.exclude_subsp}\\""
+        fi
+
+        ONLY=""
+        if [ -n "{params.only_subsp}" ]; then
+            ONLY="--only-subsp \\"{params.only_subsp}\\""
+        fi
+
+        {params.binary} \\
+            --organism          "{params.organism}" \\
+            --assembly-level    "{params.assembly_lvl}" \\
+            --outdir            "{params.outdir}" \\
+            --threads           {params.threads} \\
+            --min-genome-size   {params.min_size} \\
+            --summary-files-dir "{params.summary_dir}" \\
+            --cache-days        {params.cache_days} \\
+            $EXCLUDE \\
+            $ONLY \\
+            {params.refresh} \\
+            2>&1 | tee {log}
+
+        # Copy outputs to declared paths
+        cp {params.outdir}/filtered_assemblies.txt {output.filtered}
+        cp {params.outdir}/ftp_urls.txt            {output.ftp_list}
+        """
+
+
+# =============================================================================
+# STAGE 2 — Genome FASTA statistics summary
+# =============================================================================
+rule genome_stats:
+    """
+    Compute basic statistics for each downloaded genome:
+      - Total sequence length (genome size in bp)
+      - Number of contigs / chromosomes
+      - GC content (%)
+      - N50
+    Produces a single TSV summary across all genomes.
+    Useful for QC before running downstream tools (Mash, Prokka, Kleborate).
+    """
+    input:
+        sentinel = "data/genomes/.download_complete",
+        genomes  = expand(
+            f"{GENOME_DIR}/{{sample}}.{EXT}",
+            sample=SAMPLES
+        )
+    output:
+        stats = f"{RESULTS}/genome_stats.tsv"
+    params:
+        genomes_dir = GENOME_DIR,
+        ext         = EXT
+    threads: 4
+    resources:
+        mem_mb  = 4000,
+        runtime = 60
+    log:
+        f"{RESULTS}/.logs/genome_stats.log"
+    benchmark:
+        f"{RESULTS}/.benchmarks/genome_stats.txt"
+    shell:
+        """
+        mkdir -p $(dirname {output.stats})
+        mkdir -p $(dirname {log})
+
+        echo -e "sample\\tgenome_size_bp\\tn_contigs\\tgc_pct\\tn50_bp" > {output.stats}
+
+        for fna in {params.genomes_dir}/*.{params.ext}; do
+            sample=$(basename "$fna" .{params.ext})
+            python3 - "$fna" "$sample" << 'PYEOF' >> {output.stats} 2>> {log}
+import sys, re
+from pathlib import Path
+
+fna, sample = sys.argv[1], sys.argv[2]
+seqs = []
+current = []
+with open(fna) as f:
+    for line in f:
+        line = line.rstrip()
+        if line.startswith('>'):
+            if current:
+                seqs.append(''.join(current))
+            current = []
+        else:
+            current.append(line.upper())
+    if current:
+        seqs.append(''.join(current))
+
+lengths = sorted([len(s) for s in seqs], reverse=True)
+total   = sum(lengths)
+gc      = sum(s.count('G') + s.count('C') for s in seqs)
+gc_pct  = round(gc / total * 100, 2) if total > 0 else 0
+
+# N50
+cumsum, n50 = 0, 0
+for l in lengths:
+    cumsum += l
+    if cumsum >= total / 2:
+        n50 = l
+        break
+
+print(f"{sample}\\t{total}\\t{len(lengths)}\\t{gc_pct}\\t{n50}")
+PYEOF
+        done
+
+        echo "Genome stats complete: $(wc -l < {output.stats}) genomes" >> {log}
+        """

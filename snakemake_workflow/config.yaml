@@ -1,0 +1,83 @@
+# =============================================================================
+# genome_downloader — Snakemake Workflow Configuration
+# =============================================================================
+# Edit this file to change organism, filters, paths, and resource limits.
+# Then run: snakemake --cores 8 --configfile config/config.yaml
+# =============================================================================
+
+# ── Tool path ─────────────────────────────────────────────────────────────────
+tools:
+  genome_downloader: "bin/genome_downloader-linux-x86_64"
+  # Place the binary in the bin/ directory of this workflow, or provide the
+  # full absolute path, e.g. "/home/user/tools/genome_downloader-linux-x86_64"
+  #
+  # Download the latest release binary from:
+  # https://github.com/hackerzone85/genome_downloader/releases/latest
+  #
+  # After downloading:
+  #   mkdir -p bin/
+  #   mv genome_downloader-linux-x86_64 bin/
+  #   chmod +x bin/genome_downloader-linux-x86_64
+
+# ── Download parameters ───────────────────────────────────────────────────────
+download:
+
+  # Organism name — must match the prefix of the `organism_name` column in
+  # NCBI assembly summary. Use standard Genus species binomial.
+  organism: "Klebsiella pneumoniae"
+
+  # Assembly level(s) to include. Comma-separated, no spaces after comma.
+  # Options: "Complete Genome", "Chromosome", "Scaffold", "Contig"
+  # Recommended for comparative genomics: "Complete Genome,Chromosome"
+  assembly_level: "Complete Genome,Chromosome"
+
+  # Number of parallel download threads.
+  # Maximum recommended: 8 (NCBI FTP throttles above 10 threads).
+  threads: 8
+
+  # Subspecies to EXCLUDE — comma-separated, case-insensitive substring match.
+  # Applied to the part of organism_name that follows the species binomial.
+  # For K. pneumoniae: exclude non-pneumoniae subspecies and misannotated entries.
+  # Leave empty ("") to include all subspecies.
+  exclude_subsp: "ozaenae,rhinoscleromatis,complex,phage"
+
+  # Subspecies to EXCLUSIVELY include (optional).
+  # Leave empty ("") to include all subspecies (after exclude_subsp filter).
+  # Example: "subsp. pneumoniae" — includes only Klebsiella pneumoniae subsp. pneumoniae
+  only_subsp: ""
+
+  # Minimum genome size in base pairs.
+  # Assemblies below this threshold are excluded — removes plasmid-only assemblies
+  # that NCBI annotates as "Complete Genome" but contain no chromosomal sequence.
+  # K. pneumoniae chromosome: 5–6 Mb. Plasmids: <300 Kb.
+  # Set to 0 to disable size filtering.
+  min_genome_size: 1000000
+
+  # Directory for cached NCBI assembly summary files.
+  # These two files (~1.65 GB combined) are downloaded once and reused across
+  # all organisms and future runs until cache_days is exceeded.
+  # Using ~/.ncbi_assembly_summaries shares the cache across multiple projects.
+  summary_files_dir: "~/.ncbi_assembly_summaries"
+
+  # Maximum age of cached assembly summary files in days before re-downloading.
+  cache_days: 7
+
+  # Force re-download of assembly summary files even if cache is fresh.
+  # Set to true only when you need the absolute latest NCBI metadata.
+  refresh_cache: false
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+  genomes_dir:      "data/genomes"                   # downloaded .fna files go here
+  assembly_summary: "data/filtered_assemblies.txt"   # filtered NCBI metadata TSV
+  results_dir:      "results"                        # all analysis outputs
+
+# ── Genome file extension ─────────────────────────────────────────────────────
+# genome_downloader always produces .fna files — do not change this.
+genome_ext: "fna"
+
+# ── Resource limits ───────────────────────────────────────────────────────────
+# Adjust based on your system. These are passed to Snakemake's resource system.
+resources:
+  download_mem_mb:  4000     # memory for download rule (MB)
+  stats_mem_mb:     4000     # memory for genome_stats rule (MB)

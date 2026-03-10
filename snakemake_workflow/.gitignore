@@ -1,0 +1,16 @@
+# Downloaded genome data — never commit
+data/genomes/
+data/cache/
+
+# Snakemake internals
+.snakemake/
+
+# Results
+results/
+
+# Binary
+bin/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
