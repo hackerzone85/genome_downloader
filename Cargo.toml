@@ -1,6 +1,6 @@
 [package]
 name        = "genome_downloader"
-version     = "0.1.0"
+version     = "0.1.2"
 edition     = "2024"
 description = "General-purpose bacterial genome downloader from NCBI (RefSeq/GenBank)"
 authors     = ["Mahendra Gaur <hackerzone85>"]
@@ -9,6 +9,9 @@ repository  = "https://github.com/hackerzone85/genome_downloader"
 readme      = "README.md"
 keywords    = ["bioinformatics", "genomics", "ncbi", "bacteria", "downloader"]
 categories  = ["command-line-utilities", "science"]
+
+[package.metadata]
+changelog = "CHANGELOG.md"
 
 [[bin]]
 name = "genome_downloader"
@@ -23,6 +26,7 @@ futures-util = "0.3"
 indicatif    = "0.17"
 reqwest      = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 tokio        = { version = "1", features = ["full"] }
+chrono       = "0.4"
 
 [profile.release]
 opt-level = 3

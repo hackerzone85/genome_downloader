@@ -4,6 +4,7 @@ use clap::Parser;
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -51,7 +52,8 @@ struct Args {
     genome_rep: String,
 
     /// Output directory for downloaded .fna files.
-    #[arg(short = 'O', long, default_value = "./genome_data")]
+    /// If not specified, creates timestamped directory: genome_data_YYYY-MM-DD_HH-MM-SS
+    #[arg(short = 'O', long, default_value = "")]
     outdir: String,
 
     /// Parallel download slots. -t / --threads: recommended maximum is 8 for NCBI FTP.
@@ -59,11 +61,25 @@ struct Args {
     #[arg(short, long, default_value_t = 8)]
     threads: usize,
 
+    /// Directory for cached NCBI assembly summary files (shared across organisms).
+    ///
+    /// These large files (~1.65 GB combined) are reused across all organism queries,
+    /// so they only need to be downloaded once. Separate from --outdir (genome downloads).
+    ///
+    /// Example: --summary-files-dir ~/.ncbi_assembly_summaries
+    /// Reuse the same directory for multiple organisms to save 4+ minutes per organism.
+    #[arg(
+        long,
+        value_name = "PATH",
+        default_value = "~/.ncbi_assembly_summaries",
+        help = "Cache directory for NCBI assembly summary files (shared across organisms)"
+    )]
+    summary_files_dir: String,
+
+    /// DEPRECATED: use --summary-files-dir instead.
     /// Directory where NCBI assembly summary files are cached between runs.
     /// If not specified, defaults to <outdir>/cache at runtime.
-    /// The files (~900 MB combined) are re-used until they exceed --cache-days
-    /// old, avoiding redundant downloads.
-    #[arg(long, default_value = "")]
+    #[arg(long, default_value = "", hide = true)]
     cache_dir: String,
 
     /// Maximum age (days) of a cached assembly summary before re-downloading.
@@ -125,15 +141,41 @@ const REQUIRED_COLS: &[&str] = &[
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    fs::create_dir_all(&args.outdir)?;
+
+    // CORRECT (v0.1.2 fixed)
+    // Generate timestamped directory if outdir not specified
+    let outdir = if args.outdir.is_empty() {
+        format!(
+            "genome_data_{}",
+            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+        )
+    } else {
+        args.outdir.clone()
+    };
+    // Convert to PathBuf for use in functions
+    let outdir = PathBuf::from(&outdir);
+
+    // Expand tilde in summary_files_dir
+    // CORRECT (v0.1.2 fixed)
+    let summary_files_dir = if args.summary_files_dir.starts_with("~") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        args.summary_files_dir.replacen("~", &home, 1)
+    } else {
+        args.summary_files_dir.clone()
+    };
+
+    fs::create_dir_all(&outdir)?;
 
     // Resolve cache directory: explicit flag wins, otherwise <outdir>/cache
-    let cache_dir: PathBuf = if args.cache_dir.is_empty() {
-        PathBuf::from(&args.outdir).join("cache")
-    } else {
+    // CORRECT (v0.1.2 fixed)
+    let cache_dir: PathBuf = if !summary_files_dir.is_empty() {
+        PathBuf::from(&summary_files_dir)
+    } else if !args.cache_dir.is_empty() {
+        eprintln!("⚠️  WARNING: --cache-dir is deprecated, use --summary-files-dir instead");
         PathBuf::from(&args.cache_dir)
+    } else {
+        PathBuf::from(&outdir).join("cache")
     };
-    fs::create_dir_all(&cache_dir)?;
 
     // ── Print full parameter summary before any network activity ────────────
     let sep = "─".repeat(49);
@@ -150,7 +192,10 @@ async fn main() -> Result<()> {
         println!("  Min genome size   : disabled");
     }
     if !args.only_subsp.is_empty() {
-        println!("  Subspecies filter : ONLY → \"{}\"", args.only_subsp);
+        println!(
+            "  Subspecies filter : ONLY → subsp. \"{}\"",
+            args.only_subsp
+        );
     } else {
         println!("  Subspecies filter : all accepted (use --only-subsp to restrict)");
     }
@@ -159,7 +204,7 @@ async fn main() -> Result<()> {
     } else {
         println!("  Excluded subsp.   : none");
     }
-    println!("  Output directory  : {}", args.outdir);
+    println!("  Output directory  : {}", outdir.display());
     const NCBI_MAX_THREADS: usize = 8;
     let effective_threads = args.threads.min(NCBI_MAX_THREADS);
     if args.threads > NCBI_MAX_THREADS {
@@ -193,7 +238,7 @@ async fn main() -> Result<()> {
 
     // ── Dataset summary — printed before download starts ────────────────────
     let total = all_records.len();
-    
+
     // Count occurrences of each assembly level
     let mut assembly_level_counts: HashMap<String, usize> = HashMap::new();
     for rec in all_records.values() {
@@ -201,7 +246,7 @@ async fn main() -> Result<()> {
             *assembly_level_counts.entry(level.clone()).or_insert(0) += 1;
         }
     }
-    
+
     let n_bacteria = all_records
         .values()
         .filter(|r| r.get("group").map(|s| s == "bacteria").unwrap_or(false))
@@ -222,8 +267,14 @@ async fn main() -> Result<()> {
     // A single taxid across all records confirms no cross-species contamination.
     let mut taxid_counts: HashMap<String, usize> = HashMap::new();
     for rec in all_records.values() {
-        let tid = rec.get("species_taxid").map(|s| s.as_str()).unwrap_or("").to_string();
-        if !tid.is_empty() { *taxid_counts.entry(tid).or_insert(0) += 1; }
+        let tid = rec
+            .get("species_taxid")
+            .map(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        if !tid.is_empty() {
+            *taxid_counts.entry(tid).or_insert(0) += 1;
+        }
     }
     let n_taxid_clean = taxid_counts.len() <= 1;
 
@@ -231,7 +282,7 @@ async fn main() -> Result<()> {
     println!("  Dataset Summary");
     println!("{}", sep);
     println!("  Total genomes         : {:>9}", fmt_num(total));
-    
+
     // Display counts for all requested assembly levels
     for level in &args.assembly_level {
         let count = assembly_level_counts.get(level).copied().unwrap_or(0);
@@ -254,7 +305,11 @@ async fn main() -> Result<()> {
         } else {
             taxid_counts.keys().cloned().collect::<Vec<_>>().join(", ")
         },
-        if n_taxid_clean { "✔" } else { "⚠  multiple taxids — possible contamination!" }
+        if n_taxid_clean {
+            "✔"
+        } else {
+            "⚠  multiple taxids — possible contamination!"
+        }
     );
     println!(
         "  Version = latest      : {:>9} / {:>9}  {}",
@@ -268,12 +323,6 @@ async fn main() -> Result<()> {
         fmt_num(total),
         if n_full == total { "✔" } else { "⚠" }
     );
-    // ── Organism name pattern summary (taxon collapsing) ─────────────────────
-    // Mirrors extract_taxon() from check_unique_values.py:
-    //   "Genus species subsp. epithet"  → take 4 tokens
-    //   "Genus species complex sp."     → take 4 tokens
-    //   "Genus species phage"           → take 3 tokens
-    //   anything else                   → take 2 tokens (Genus species)
     let mut taxon_counts: HashMap<String, usize> = HashMap::new();
     for rec in all_records.values() {
         let name = rec.get("organism_name").map(|s| s.as_str()).unwrap_or("");
@@ -292,6 +341,35 @@ async fn main() -> Result<()> {
     let mut taxon_vec: Vec<(String, usize)> = taxon_counts.into_iter().collect();
     taxon_vec.sort_by(|a, b| b.1.cmp(&a.1)); // sort by count descending
 
+    // ── Check for subspecies mixing and warn user ─────────────────────────────
+    // Only warn if NO subspecies filter is applied AND multiple subspecies exist
+    let has_subspecies_filter = !args.only_subsp.is_empty() || !args.exclude_subsp.is_empty();
+    let has_multiple_subspecies = taxon_vec.len() > 1;
+    let has_any_subspecies = taxon_vec
+        .iter()
+        .any(|(name, _)| name.contains("subsp.") || name.contains("complex"));
+
+    if !has_subspecies_filter && (has_multiple_subspecies || has_any_subspecies) {
+        println!("{}", sep);
+        println!("  ⚠️  WARNING: Mixed Subspecies Detected");
+        println!("{}", sep);
+        println!("  This dataset contains multiple subspecies:");
+        for (taxon, count) in &taxon_vec {
+            if taxon.contains("subsp.") || taxon.contains("complex") {
+                println!("    • {} ({})", taxon, fmt_num(*count));
+            }
+        }
+        println!();
+        println!("  To filter, re-run with:");
+        println!("    --only-subsp \"<subspecies>\"     (accept only one)");
+        println!("    --exclude-subsp \"<name>,<name>\"  (exclude specific ones)");
+        println!();
+        println!("  Examples:");
+        println!("    --only-subsp \"pneumoniae\"");
+        println!("    --exclude-subsp \"ozaenae,rhinoscleromatis\"");
+        println!("{}", sep);
+    }
+
     println!("  Organism name patterns (strain name collapsed)");
     println!("{}", sep);
     for (taxon, count) in &taxon_vec {
@@ -300,10 +378,10 @@ async fn main() -> Result<()> {
     println!("{}", sep);
 
     // 2. Write filtered TSV summary and FTP URL list
-    save_outputs(&all_records, Path::new(&args.outdir))?;
+    save_outputs(&all_records, Path::new(&outdir))?;
 
     // 3. Parallel download and decompress
-    download_all_genomes(all_records, &args, effective_threads).await?;
+    download_all_genomes(all_records, &args, outdir, effective_threads).await?;
 
     Ok(())
 }
@@ -551,7 +629,7 @@ async fn process_summary(
         // species_taxid — stored in record for post-filter contamination check.
         // Not used as a hard filter: the value varies per organism and is
         // unknown at parse time. Uniqueness is validated in the summary block.
-        let species_taxid = get(&col, &row, "species_taxid");
+        let _species_taxid = get(&col, &row, "species_taxid");
 
         if organism_name.starts_with(&args.organism)
             && passes_only
@@ -656,12 +734,35 @@ fn save_outputs(map: &HashMap<String, AssemblyRecord>, outdir: &Path) -> Result<
 
 async fn download_all_genomes(
     records: HashMap<String, AssemblyRecord>,
-    args: &Args,
+    _args: &Args,
+    outdir: PathBuf,
     effective_threads: usize,
 ) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(effective_threads));
-    let outdir: PathBuf = PathBuf::from(&args.outdir);
     let total = records.len() as u64;
+
+    // Before downloading, remove files NOT in current filtered set
+    let filtered_asm_ids: HashSet<String> = records
+        .values()
+        .filter_map(|rec| {
+            rec.get("ftp_path")
+                .map(|path| path.split('/').next_back().unwrap_or_default().to_string())
+        })
+        .collect();
+
+    // Clean up orphaned files
+    for entry in std::fs::read_dir(&outdir)?.flatten() {
+        let path = entry.path();
+        let filename = path.file_name().unwrap().to_string_lossy().to_string();
+
+        // If it's a .fna or .done file but NOT in current filter list, delete it
+        if filename.ends_with(".fna") || filename.ends_with(".done") {
+            let asm_id = filename.replace("_genomic.fna", "").replace(".done", "");
+            if !filtered_asm_ids.contains(&asm_id) {
+                std::fs::remove_file(&path)?;
+            }
+        }
+    }
 
     // ── Pre-flight: tally already-complete genomes so the progress bar
     //    starts at the correct position rather than zero. ──────────────
@@ -721,7 +822,7 @@ async fn download_all_genomes(
     for rec in records.into_values() {
         let sem = Arc::clone(&semaphore);
         let pb_clone = pb.clone();
-        let outdir = outdir.clone();
+        let outdir = outdir.clone(); // ✅ Clone for each iteration
 
         tasks.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();

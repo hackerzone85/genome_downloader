@@ -70,7 +70,8 @@ genome_downloader -o "Organism name" [OPTIONS]
 | `-O`, `--outdir` | `./genome_data` | Output directory for downloaded `.fna` files |
 | `-t`, `--threads` | `8` | Parallel download slots (capped at 8 for NCBI FTP) |
 | `--min-genome-size` | `1000000` | Minimum genome size in bp — filters plasmid-only assemblies. Set to `0` to disable |
-| `--cache-dir` | `<outdir>/cache` | Directory for cached NCBI assembly summary files |
+|`--summary-files-dir` | `<outdir>/cache` | **NEW** Directory for cached NCBI assembly summary files. Share this across organisms to avoid re-downloading 1.65 GB per organism |
+| `--cache-dir` | *(deprecated)* | Deprecated alias for `--summary-files-dir` |
 | `--cache-days` | `7` | Maximum age of cached summary before re-download |
 | `--refresh-cache` | `false` | Force re-download of assembly summary files |
 | `--only-subsp` | _(none)_ | Restrict to one subspecies epithet (case-insensitive substring match) |
@@ -101,11 +102,34 @@ genome_downloader \
     -O ko_genomes
 ```
 
-### Reuse an existing cache across multiple species
+### Reuse an existing cache across multiple species (recommended)
+When processing multiple organisms, reuse a single summary cache to save 4+ minutes and 1.65 GB per organism:
 
 ```bash
-genome_downloader -o "Klebsiella variicola" -a "Complete Genome,Chromosome" \
-    -O kv_genomes --cache-dir kp_genomes/cache/
+# Set up once
+export SUMMARY_DIR=~/.ncbi_assembly_summaries
+mkdir -p "$SUMMARY_DIR"
+
+# E. coli — downloads summaries (~4 min)
+genome_downloader \
+    -o "Escherichia coli" \
+    -a "Complete Genome,Chromosome" \
+    --summary-files-dir "$SUMMARY_DIR" \
+    -O ecoli_genomes
+
+# Klebsiella — reuses summaries from cache (~1 sec) ⚡
+genome_downloader \
+    -o "Klebsiella pneumoniae" \
+    -a "Complete Genome,Chromosome" \
+    --summary-files-dir "$SUMMARY_DIR" \
+    -O kp_genomes
+
+# Staphylococcus — reuses summaries from cache (~1 sec) ⚡
+genome_downloader \
+    -o "Staphylococcus aureus" \
+    -a "Complete Genome,Chromosome" \
+    --summary-files-dir "$SUMMARY_DIR" \
+    -O staph_genomes
 ```
 
 ### Escherichia coli — Complete Genome only, subspecies coli
@@ -113,11 +137,11 @@ genome_downloader -o "Klebsiella variicola" -a "Complete Genome,Chromosome" \
 ```bash
 genome_downloader \
     -o "Escherichia coli" \
-    -a "Complete Genome" \
+    -a "Complete Genome,Chromosome" \
+    --summary-files-dir "$SUMMARY_DIR" \
     --only-subsp "subsp. coli" \
     -O ecoli_genomes
 ```
-
 ---
 
 ## Output
@@ -129,7 +153,7 @@ genome_downloader \
 | `<outdir>/filtered_assemblies.txt` | Filtered assembly metadata (TSV) |
 | `<outdir>/ftp_urls.txt` | FTP URLs of all downloaded genomes |
 | `<outdir>/failed_downloads.txt` | URLs that failed after all retries (if any) |
-| `<outdir>/cache/` | Cached NCBI assembly summary files |
+| `~/.ncbi_assembly_summaries` | Cached NCBI assembly summary files (Default Dir.) |
 
 ---
 
